@@ -173,12 +173,6 @@ const resources = {
   },
 };
 
-for (const v of filters) {
-  resources.devices[v.label] = {
-    parameter: v.parameter,
-    type: (v.type || "").split(",").map((s) => s.trim()),
-  };
-}
 
 export function getLabels(resource: Resource): string[] {
   if (!resources[resource]) return [];
