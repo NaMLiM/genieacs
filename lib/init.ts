@@ -78,10 +78,10 @@ export async function getStatus(): Promise<Status> {
     overview: true,
   };
 
+  // UI.index.* and UI.filters.* are stripped (hardcoded in frontend)
+  // UI.device and UI.overview are preserved for device page & overview
   for (const k of Object.keys(ui)) {
-    if (k.startsWith("filters.")) status.filters = false;
     if (k === "device" || k.startsWith("device.")) status.device = false;
-    if (k.startsWith("index.")) status.index = false;
     if (k === "overview" || k.startsWith("overview.")) status.overview = false;
   }
 
@@ -121,18 +121,8 @@ export async function seed(options: Record<string, boolean>): Promise<void> {
     ];
   }
 
-  if (options.filters) {
-    resources.config = (resources.config || []).concat([
-      { _id: "ui.filters.0.label", value: "'Serial number'" },
-      { _id: "ui.filters.0.parameter", value: "DeviceID.SerialNumber" },
-      { _id: "ui.filters.0.type", value: "'string'" },
-      { _id: "ui.filters.1.label", value: "'Product class'" },
-      { _id: "ui.filters.1.parameter", value: "DeviceID.ProductClass" },
-      { _id: "ui.filters.1.type", value: "'string'" },
-      { _id: "ui.filters.2.label", value: "'Tag'" },
-      { _id: "ui.filters.2.type", value: "'tag'" },
-    ]);
-  }
+  // UI.filters.* and UI.index.* are stripped — filters and columns are
+  // hardcoded in the frontend (smart-query.ts, devices-page.ts).
 
   if (options.device) {
     resources.config = (resources.config || []).concat([
@@ -148,45 +138,6 @@ export async function seed(options: Record<string, boolean>): Promise<void> {
       { _id: "datamodel-explorer", script: DATAMODEL_EXPLORER },
       { _id: "instance-table", script: INSTANCE_TABLE },
       { _id: "tags", script: TAGS },
-    ]);
-  }
-
-  if (options.index) {
-    resources.config = (resources.config || []).concat([
-      { _id: "ui.index.0.type", value: "'device-link'" },
-      { _id: "ui.index.0.label", value: "'Serial number'" },
-      { _id: "ui.index.0.parameter", value: "DeviceID.SerialNumber" },
-      { _id: "ui.index.0.components.0.type", value: "'parameter'" },
-      { _id: "ui.index.1.label", value: "'Product class'" },
-      { _id: "ui.index.1.parameter", value: "DeviceID.ProductClass" },
-      { _id: "ui.index.2.label", value: "'Software version'" },
-      {
-        _id: "ui.index.2.parameter",
-        value: "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
-      },
-      { _id: "ui.index.3.label", value: "'IP'" },
-      {
-        _id: "ui.index.3.parameter",
-        value:
-          "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress",
-      },
-      { _id: "ui.index.4.label", value: "'SSID'" },
-      {
-        _id: "ui.index.4.parameter",
-        value: "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID",
-      },
-      { _id: "ui.index.5.type", value: "'container'" },
-      { _id: "ui.index.5.label", value: "'Last inform'" },
-      { _id: "ui.index.5.element", value: "'span.inform'" },
-      { _id: "ui.index.5.parameter", value: "DATE_STRING(Events.Inform)" },
-      { _id: "ui.index.5.components.0.type", value: "'parameter'" },
-      { _id: "ui.index.5.components.1.chart", value: "'online'" },
-      { _id: "ui.index.5.components.1.type", value: "'overview-dot'" },
-      { _id: "ui.index.6.type", value: "'tags'" },
-      { _id: "ui.index.6.label", value: "'Tags'" },
-      { _id: "ui.index.6.parameter", value: "Tags" },
-      { _id: "ui.index.6.unsortable", value: "true" },
-      { _id: "ui.index.6.writable", value: "false" },
     ]);
   }
 

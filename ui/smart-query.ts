@@ -1,4 +1,3 @@
-import { filters } from "./config.ts";
 import Expression from "../lib/common/expression.ts";
 import { encodeTag } from "../lib/util.ts";
 import Path from "../lib/common/path.ts";
@@ -10,8 +9,72 @@ type ResourceFilter = {
 
 export type Resource = keyof typeof resources;
 
+// ── Custom device search filters (hardcoded, stripped from UI.* config) ──
+const DEVICE_FILTERS: Record<string, ResourceFilter> = {
+  Status: {
+    parameter: new Expression.Parameter(Path.parse("Events.Inform")),
+    type: ["timestamp"],
+  },
+  Username: {
+    parameter: new Expression.Parameter(Path.parse("DeviceID.ID")),
+    type: ["string"],
+  },
+  SSID: {
+    parameter: new Expression.Parameter(
+      Path.parse(
+        "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID",
+      ),
+    ),
+    type: ["string"],
+  },
+  IP: {
+    parameter: new Expression.Parameter(
+      Path.parse(
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress",
+      ),
+    ),
+    type: ["string"],
+  },
+  "IP TR069": {
+    parameter: new Expression.Parameter(
+      Path.parse(
+        "InternetGatewayDevice.ManagementServer.ConnectionRequestURL",
+      ),
+    ),
+    type: ["string"],
+  },
+  SN: {
+    parameter: new Expression.Parameter(Path.parse("DeviceID.SerialNumber")),
+    type: ["string"],
+  },
+  MAC: {
+    parameter: new Expression.Parameter(
+      Path.parse(
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.MACAddress",
+      ),
+    ),
+    type: ["mac"],
+  },
+  Product: {
+    parameter: new Expression.Parameter(Path.parse("DeviceID.ProductClass")),
+    type: ["string"],
+  },
+  "Software Rev": {
+    parameter: new Expression.Parameter(
+      Path.parse(
+        "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+      ),
+    ),
+    type: ["string"],
+  },
+  Tag: {
+    parameter: new Expression.Parameter(Path.parse("")),
+    type: ["tag"],
+  },
+};
+
 const resources = {
-  devices: {} as Record<string, ResourceFilter>,
+  devices: DEVICE_FILTERS as Record<string, ResourceFilter>,
   faults: {
     Device: {
       parameter: new Expression.Parameter(Path.parse("device")),
@@ -155,10 +218,12 @@ function queryTimestamp(param: Expression, value: string): Expression | null {
 }
 
 function queryString(param: Expression, value: string): Expression {
+  // Partial/ILIKE matching: wrap value with % wildcards
+  // so "192.168" matches "192.168.1.1" and "abc" matches "ABCDEF123"
   return new Expression.Binary(
     "LIKE",
     new Expression.FunctionCall("LOWER", [param]),
-    new Expression.Literal(value.toLowerCase()),
+    new Expression.Literal(`%${value.toLowerCase()}%`),
   );
 }
 

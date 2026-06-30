@@ -1,7 +1,7 @@
 import { m as mContext } from "./components.ts";
 import { createMithrilHost } from "./mithril-compat.ts";
 import { navigate } from "./router.ts";
-import { pageSize as PAGE_SIZE, index as indexConfig } from "./config.ts";
+import { pageSize as PAGE_SIZE } from "./config.ts";
 import { createFilter } from "./filter-component.ts";
 import { createIndexTable } from "./index-table-component.ts";
 import {
@@ -19,6 +19,151 @@ import Path from "../lib/common/path.ts";
 import * as smartQuery from "./smart-query.ts";
 import { renderView } from "./views.ts";
 import { div, h1, button, a } from "./dom.ts";
+
+// ── Custom device table columns (hardcoded, stripped from UI.* config) ──
+const CUSTOM_COLUMNS = [
+  // 1. Status — overview-dot colored by online/offline chart
+  {
+    label: "Status",
+    type: "container",
+    parameter: Expression.parse("DATE_STRING(Events.Inform)"),
+    element: "span.status",
+    unsortable: false,
+    raw: {
+      components: {
+        "0": { type: new Expression.Literal("parameter") },
+        "1": {
+          type: new Expression.Literal("overview-dot"),
+          chart: new Expression.Literal("online"),
+        },
+      },
+      element: new Expression.Literal("span.status"),
+    },
+  },
+  // 2. Username
+  {
+    label: "Username",
+    parameter: Expression.parse("DeviceID.ID"),
+    unsortable: false,
+    raw: {},
+  },
+  // 3. SSID
+  {
+    label: "SSID",
+    parameter:
+      Expression.parse("InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID"),
+    unsortable: false,
+    raw: {},
+  },
+  // 4. RX — vendor-specific received signal power (e.g. TP-Link/Huawei ONT)
+  {
+    label: "RX",
+    parameter: Expression.parse("InternetGatewayDevice.DeviceInfo.X_TP_RxPower"),
+    unsortable: false,
+    raw: {},
+  },
+  // 5. Temp — vendor-specific temperature
+  {
+    label: "Temp",
+    parameter:
+      Expression.parse("InternetGatewayDevice.DeviceInfo.X_TP_Temperature"),
+    unsortable: false,
+    raw: {},
+  },
+  // 6. Uptime
+  {
+    label: "Uptime",
+    parameter:
+      Expression.parse("InternetGatewayDevice.DeviceInfo.UpTime"),
+    unsortable: false,
+    raw: {},
+  },
+  // 7. IP PPPoE/Static (WAN IP)
+  {
+    label: "IP PPPoE/Static",
+    parameter:
+      Expression.parse(
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress",
+      ),
+    unsortable: false,
+    raw: {},
+  },
+  // 8. IP TR069
+  {
+    label: "IP TR069",
+    parameter:
+      Expression.parse(
+        "InternetGatewayDevice.ManagementServer.ConnectionRequestURL",
+      ),
+    unsortable: false,
+    raw: {},
+  },
+  // 9. SN (Serial Number) — clickable link
+  {
+    label: "SN",
+    type: "device-link",
+    parameter: Expression.parse("DeviceID.SerialNumber"),
+    unsortable: false,
+    raw: {
+      components: {
+        "0": { type: new Expression.Literal("parameter") },
+      },
+    },
+  },
+  // 10. MAC
+  {
+    label: "MAC",
+    parameter:
+      Expression.parse(
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.MACAddress",
+      ),
+    unsortable: false,
+    raw: {},
+  },
+  // 11. Product
+  {
+    label: "Product",
+    parameter: Expression.parse("DeviceID.ProductClass"),
+    unsortable: false,
+    raw: {},
+  },
+  // 12. Software Rev
+  {
+    label: "Software Rev",
+    parameter:
+      Expression.parse(
+        "InternetGatewayDevice.DeviceInfo.SoftwareVersion",
+      ),
+    unsortable: false,
+    raw: {},
+  },
+  // 13. Last Inform
+  {
+    label: "Last Inform",
+    type: "container",
+    parameter: Expression.parse("DATE_STRING(Events.Inform)"),
+    element: "span.inform",
+    unsortable: false,
+    raw: {
+      components: {
+        "0": { type: new Expression.Literal("parameter") },
+        "1": {
+          type: new Expression.Literal("overview-dot"),
+          chart: new Expression.Literal("online"),
+        },
+      },
+      element: new Expression.Literal("span.inform"),
+    },
+  },
+  // 14. Tag
+  {
+    label: "Tag",
+    type: "tags",
+    parameter: Expression.parse("Tags"),
+    unsortable: true,
+    raw: {},
+  },
+];
 
 function getSortable(p: Expression): Path | null {
   const expressionParams = extractPaths(p);
@@ -66,19 +211,10 @@ export function init(args: URLSearchParams): Promise<Attrs> {
   }
   const filterStr = args.get("filter");
   const sortStr = args.get("sort");
-  const indexParameters = indexConfig;
-  if (!indexParameters.length) {
-    indexParameters.push({
-      label: "ID",
-      parameter: Expression.parse("DeviceID.ID"),
-      unsortable: false,
-      raw: {},
-    });
-  }
   return Promise.resolve({
     filter: filterStr ? Expression.parse(filterStr) : undefined,
     sort: sortStr ? JSON.parse(sortStr) : undefined,
-    indexParameters,
+    indexParameters: CUSTOM_COLUMNS,
   });
 }
 
@@ -233,7 +369,7 @@ function renderActions(selected: Set<string>): Node[] {
 }
 
 export interface Attrs {
-  indexParameters: typeof indexConfig;
+  indexParameters: (typeof CUSTOM_COLUMNS)[number][];
   filter?: Expression;
   sort?: Record<string, number>;
 }

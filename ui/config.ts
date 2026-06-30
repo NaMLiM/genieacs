@@ -46,36 +46,34 @@ for (const [key, value] of Object.entries(window.clientConfig)) {
 
 export const filters: Filters = [];
 export let pageSize: number = 10;
-export const overview: overview = { charts: {}, groups: [] };
+export const overview: overview = {
+  charts: {
+    online: {
+      label: "Online Status",
+      slices: [
+        {
+          label: "Online",
+          filter: Expression.parse('Events.Inform > NOW() - 300000'),
+          color: "#31a354",
+        },
+        {
+          label: "1 day",
+          filter: Expression.parse('Events.Inform > NOW() - 86400000'),
+          color: "#a1d99b",
+        },
+        {
+          label: "Offline",
+          filter: Expression.parse('Events.Inform <= NOW() - 86400000'),
+          color: "#e5f5e0",
+        },
+      ],
+    },
+  },
+  groups: [],
+};
+// Index and filters are now hardcoded in devices-page.ts and smart-query.ts
 export const index: Index = [];
 export let device: NestedRecord = {};
-
-for (const obj of Object.values(conf["filters"] || {})) {
-  let label = "";
-  let parameter: Expression = new Expression.Literal(false);
-  let type = "string";
-  if (obj["label"] instanceof Expression.Literal)
-    label = obj["label"].value as string;
-  if (obj["parameter"] instanceof Expression) parameter = obj["parameter"];
-  if (obj["type"] instanceof Expression.Literal)
-    type = obj["type"].value as string;
-  filters.push({ label, parameter, type });
-}
-
-for (const obj of Object.values(conf["index"] || {})) {
-  let label = "";
-  let parameter: Expression = new Expression.Literal(null);
-  let unsortable = false;
-  let type = "";
-  if (obj["label"] instanceof Expression.Literal)
-    label = obj["label"].value as string;
-  if (obj["type"] instanceof Expression.Literal)
-    type = obj["type"].value as string;
-  if (obj["parameter"] instanceof Expression) parameter = obj["parameter"];
-  if (obj["unsortable"] instanceof Expression.Literal)
-    unsortable = obj["unsortable"].value as boolean;
-  index.push({ label, type, parameter, unsortable, raw: obj });
-}
 
 const overviewConf = conf["overview"] as NestedRecord | undefined;
 for (const obj of Object.values(
