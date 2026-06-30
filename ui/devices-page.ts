@@ -7,6 +7,7 @@ import { createIndexTable } from "./index-table-component.ts";
 import {
   pagedFetch,
   count as reactiveCount,
+  createBookmark,
   invalidate,
 } from "./reactive-store.ts";
 import * as store from "./legacy-store.ts";
@@ -18,7 +19,7 @@ import Expression, { extractPaths } from "../lib/common/expression.ts";
 import Path from "../lib/common/path.ts";
 import * as smartQuery from "./smart-query.ts";
 import { renderView } from "./views.ts";
-import { div, h1, button, a } from "./dom.ts";
+import { div, h1, button, a, span } from "./dom.ts";
 
 // ── Custom device table columns (hardcoded, stripped from UI.* config) ──
 const CUSTOM_COLUMNS = [
@@ -55,19 +56,25 @@ const CUSTOM_COLUMNS = [
     unsortable: false,
     raw: {},
   },
-  // 4. RX — vendor-specific received signal power (e.g. TP-Link/Huawei ONT)
+  // 4. RX — multi-vendor received signal power (TP-Link/Huawei/ZTE)
+  // Rendered inline in valueCallback to coalesce across vendor paths
   {
     label: "RX",
-    parameter: Expression.parse("InternetGatewayDevice.DeviceInfo.X_TP_RxPower"),
-    unsortable: false,
+    parameter:
+      Expression.parse(
+        "InternetGatewayDevice.DeviceInfo.X_TP_RxPower",
+      ),
+    unsortable: true,
     raw: {},
   },
-  // 5. Temp — vendor-specific temperature
+  // 5. Temp — multi-vendor temperature
   {
     label: "Temp",
     parameter:
-      Expression.parse("InternetGatewayDevice.DeviceInfo.X_TP_Temperature"),
-    unsortable: false,
+      Expression.parse(
+        "InternetGatewayDevice.DeviceInfo.X_TP_Temperature",
+      ),
+    unsortable: true,
     raw: {},
   },
   // 6. Uptime
@@ -377,18 +384,52 @@ export interface Attrs {
 export function createPage(attrs: Attrs): HTMLElement {
   document.title = "Devices - GenieACS";
 
-  const showCount = new StateSignal(PAGE_SIZE);
+  const currentPage = new StateSignal(1);
 
   const attributes = attrs.indexParameters;
   const sort = attrs.sort || {};
 
   const filter = unpackSmartQuery(attrs.filter ?? new Expression.Literal(true));
 
-  // Reactive data signals — the device list is limit-bounded so only the
-  // visible page is ever fetched
-  const devsQuery = (): { value: unknown[]; loading: boolean } =>
-    pagedFetch("devices", filter, { sort, limit: showCount.get() });
+  // Reactive data signals — the device list is page-bounded using
+  // bookmark-based pagination (first N items = bookmark, skip via applySkip)
+  function devsQuery(): { value: unknown[]; loading: boolean } {
+    const page = currentPage.get();
+    const offset = (page - 1) * PAGE_SIZE;
+
+    // Page 1: plain pagedFetch with limit = PAGE_SIZE
+    if (offset === 0) {
+      return pagedFetch("devices", filter, { sort, limit: PAGE_SIZE });
+    }
+
+    // Page N: create a bookmark for the first `offset` items to get a
+    // row-boundary, then use applySkip to fetch items after that boundary
+    const bm = createBookmark("devices", filter, sort, offset);
+    const bmState = bm.get();
+
+    if (bmState.timestamp === 0) {
+      // Bookmark not yet resolved — loading
+      return { value: [], loading: true };
+    }
+
+    // Use the bookmark to skip items before it
+    const effective = bmState.value
+      ? bmState.value.applySkip(filter)
+      : filter;
+    return pagedFetch("devices", effective, {
+      sort,
+      limit: PAGE_SIZE,
+    });
+  }
+
   const countQuery = reactiveCount("devices", filter);
+
+  // Compute total pages from count
+  function totalPages(): number | undefined {
+    const t = countQuery.get();
+    if (t == null || !t.value) return undefined;
+    return Math.ceil(t.value / PAGE_SIZE);
+  }
 
   const downloadUrl = getDownloadUrl(filter, attributes);
 
@@ -419,8 +460,54 @@ export function createPage(attrs: Attrs): HTMLElement {
     void navigate("/devices", ops);
   }
 
+  // Helper: extract a parameter value from a flat device object
+  // (GenieACS stores it directly or as {value: [actual]})
+  function paramValue(device: any, path: string): unknown {
+    const v = device[path];
+    if (v != null && typeof v === "object" && "value" in (v as any)) {
+      return (v as any).value?.[0];
+    }
+    return v;
+  }
+
   // Value callback — renders content into a DOM container
   const valueCallback = (attr: any, device: any): Node => {
+    // RX — coalesce across vendor paths
+    if (attr.label === "RX") {
+      const val =
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_TP_RxPower",
+        ) ??
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_HW_RxPower",
+        ) ??
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_ZTE_RxPower",
+        );
+      return span({}, val != null ? `${val}` : "");
+    }
+
+    // Temp — coalesce across vendor paths
+    if (attr.label === "Temp") {
+      const val =
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_TP_Temperature",
+        ) ??
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_HW_Temperature",
+        ) ??
+        paramValue(
+          device,
+          "InternetGatewayDevice.DeviceInfo.X_ZTE_Temperature",
+        );
+      return span({}, val != null ? `${val}` : "");
+    }
+
     if (!attr.type && !attr.components && attr.component) {
       return div(
         {},
@@ -470,7 +557,11 @@ export function createPage(attrs: Attrs): HTMLElement {
       data: () => devsQuery().value as Record<string, unknown>[],
       total: () => countQuery.get().value,
       loading: () => devsQuery().loading,
-      showMoreCallback: () => showCount.set(showCount.get() + PAGE_SIZE),
+      pagination: () => ({
+        currentPage: currentPage.get(),
+        totalPages: totalPages() ?? 1,
+        onPageChange: (page: number) => currentPage.set(page),
+      }),
       sortAttributes,
       onSortChange,
       downloadUrl,

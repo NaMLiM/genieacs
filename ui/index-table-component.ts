@@ -15,6 +15,7 @@ import {
 } from "./dom.ts";
 import { StateSignal } from "./signals.ts";
 import { createIcon } from "./icons.ts";
+import { pageSize as PAGE_SIZE } from "./config.ts";
 import debounce from "../lib/common/debounce.ts";
 
 export interface IndexTableAttribute {
@@ -22,8 +23,6 @@ export interface IndexTableAttribute {
   label: string;
   type?: string;
 }
-
-const MAX_PAGE_SIZE = 200;
 
 function getExcerpt(text: string, maxLength = 80, maxLines = 10): string[] {
   let lines: string[] = text?.split("\n", maxLines + 1) ?? [""];
@@ -52,12 +51,18 @@ function getRecordId(record: Record<string, unknown>): string {
   return (record["_id"] ?? record["DeviceID.ID"]) as string;
 }
 
+export interface PaginationState {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}
+
 export interface IndexTableAttrs {
   attributes: IndexTableAttribute[];
   data: () => Record<string, unknown>[];
   total: () => number | undefined;
   loading: () => boolean;
-  showMoreCallback: () => void;
+  pagination?: () => PaginationState;
   sortAttributes: Record<number, number>;
   onSortChange: (events: number[]) => void;
   downloadUrl?: string;
@@ -75,7 +80,7 @@ export function createIndexTable(attrs: IndexTableAttrs): HTMLElement {
     data,
     total,
     loading,
-    showMoreCallback,
+    pagination,
     sortAttributes,
     onSortChange,
     downloadUrl,
@@ -329,33 +334,100 @@ export function createIndexTable(attrs: IndexTableAttrs): HTMLElement {
             colspan: colCount,
           },
           div(
-            { class: "flex items-center justify-between" },
+            { class: "flex items-center justify-between gap-4" },
             div(
-              {},
-              // Reactive pagination text
+              { class: "text-sm text-stone-500" },
+              // Reactive count text
               () => {
                 const t = total();
                 const len = data().length;
-                return t != null ? `${len} / ${t}` : `${len}`;
+                if (t == null) return `${len}`;
+                const p = pagination?.();
+                const page = p?.currentPage ?? 1;
+                const start = (page - 1) * PAGE_SIZE + 1;
+                const end = (page - 1) * PAGE_SIZE + len;
+                return `${start}-${end} / ${t}`;
               },
-              button(
-                {
-                  class:
-                    "px-4 py-2 border border-stone-300 rounded-md text-stone-700 bg-white hover:bg-stone-50 ml-4 disabled:opacity-50 disabled:cursor-not-allowed",
-                  title: "Show more records",
-                  disabled: () => {
-                    const records = data();
-                    const t = total();
-                    return (
-                      !records.length ||
-                      records.length >= Math.min(MAX_PAGE_SIZE, t ?? 0)
-                    );
-                  },
-                  onclick: showMoreCallback,
-                },
-                "More",
-              ),
             ),
+            // Pagination controls
+            pagination
+              ? () => {
+                  const { currentPage, totalPages, onPageChange } = pagination!();
+                  if (totalPages <= 1) return null;
+                  const pages: Node[] = [];
+
+                  // First / Previous
+                  pages.push(
+                    button({
+                      class:
+                        "px-2 py-1 border border-stone-300 rounded-md text-sm text-stone-700 bg-white hover:bg-stone-50 disabled:opacity-50 disabled:cursor-not-allowed",
+                      title: "First page",
+                      disabled: currentPage <= 1,
+                      onclick: () => onPageChange(1),
+                    }, "\u00AB"),
+                    button({
+                      class:
+                        "px-2 py-1 border border-stone-300 rounded-md text-sm text-stone-700 bg-white hover:bg-stone-50 disabled:opacity-50 disabled:cursor-not-allowed ml-1",
+                      title: "Previous page",
+                      disabled: currentPage <= 1,
+                      onclick: () => onPageChange(currentPage - 1),
+                    }, "\u2039"),
+                  );
+
+                  // Page numbers — show up to 10 pages total with ellipsis
+                  const maxVisible = 10;
+                  let startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                  let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+                  if (endPage - startPage < maxVisible - 1) {
+                    startPage = Math.max(1, endPage - maxVisible + 1);
+                  }
+
+                  if (startPage > 1) {
+                    pages.push(span({ class: "px-1 text-stone-400" }, "…"));
+                  }
+
+                  for (let p = startPage; p <= endPage; p++) {
+                    const isCurrent = p === currentPage;
+                    pages.push(
+                      button({
+                        class:
+                          `px-2 py-1 border rounded-md text-sm ml-1 ${
+                            isCurrent
+                              ? "bg-cyan-600 text-white border-cyan-600"
+                              : "text-stone-700 bg-white border-stone-300 hover:bg-stone-50"
+                          }`,
+                        title: `Page ${p}`,
+                        disabled: isCurrent,
+                        onclick: () => onPageChange(p),
+                      }, `${p}`),
+                    );
+                  }
+
+                  if (endPage < totalPages) {
+                    pages.push(span({ class: "px-1 text-stone-400" }, "…"));
+                  }
+
+                  // Next / Last
+                  pages.push(
+                    button({
+                      class:
+                        "px-2 py-1 border border-stone-300 rounded-md text-sm text-stone-700 bg-white hover:bg-stone-50 disabled:opacity-50 disabled:cursor-not-allowed ml-1",
+                      title: "Next page",
+                      disabled: currentPage >= totalPages,
+                      onclick: () => onPageChange(currentPage + 1),
+                    }, "\u203A"),
+                    button({
+                      class:
+                        "px-2 py-1 border border-stone-300 rounded-md text-sm text-stone-700 bg-white hover:bg-stone-50 disabled:opacity-50 disabled:cursor-not-allowed ml-1",
+                      title: "Last page",
+                      disabled: currentPage >= totalPages,
+                      onclick: () => onPageChange(totalPages),
+                    }, "\u00BB"),
+                  );
+
+                  return div({ class: "flex items-center" }, ...pages);
+                }
+              : null,
             downloadUrl
               ? a(
                   {
