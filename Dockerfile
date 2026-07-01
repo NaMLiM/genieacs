@@ -41,6 +41,9 @@ RUN apk add --no-cache tini
 COPY --from=deps /opt/genieacs/node_modules node_modules/
 COPY --from=build /opt/genieacs/dist/ ./
 
+# Add binaries to PATH
+ENV PATH=/opt/genieacs/bin:$PATH
+
 EXPOSE 7547 7557 7567 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]
@@ -68,6 +71,9 @@ COPY public/ public/
 RUN git init && git config user.email docker@genieacs.local && git config user.name "Docker Build" && \
     git add -A && git commit -m "build" --allow-empty && \
     npm run build && rm -rf .git
+
+# Build output is in dist/bin/ — add to PATH
+ENV PATH=/opt/genieacs/dist/bin:$PATH
 
 # Override config defaults so services bind to 0.0.0.0
 ENV GENIEACS_CWMP_INTERFACE=0.0.0.0
