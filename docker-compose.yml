@@ -1,0 +1,52 @@
+# docker-compose.yml — Development environment
+#
+# Services are rebuilt on source changes via mounted volumes.
+# Rebuild & restart services:
+#   docker compose exec genieacs npm run build
+#   docker compose restart genieacs
+#
+# Access:
+#   UI:      http://localhost:3000
+#   NBI:     http://localhost:7557
+#   FS:      http://localhost:7567
+#   CWMP:    http://localhost:7547
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  genieacs:
+    build:
+      context: .
+      target: dev
+    restart: unless-stopped
+    ports:
+      - "7547:7547"   # CWMP (TR-069)
+      - "7557:7557"   # NBI (REST API)
+      - "7567:7567"   # FS (File server)
+      - "3000:3000"   # UI (Web dashboard)
+    volumes:
+      # Mount source — edit locally, rebuild inside container
+      - ./lib:/opt/genieacs/lib:ro
+      - ./bin:/opt/genieacs/bin:ro
+      - ./ui:/opt/genieacs/ui:ro
+      - ./seed:/opt/genieacs/seed:ro
+      - ./build:/opt/genieacs/build:ro
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongodb_data:

@@ -1,0 +1,135 @@
+# docker-compose.prod.yml — Production environment
+#
+# Pre-build the image first:
+#   docker compose -f docker-compose.prod.yml build
+#
+# Start:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Access:
+#   UI:      http://<host>:3000
+#   NBI:     http://<host>:7557
+#   FS:      http://<host>:7567
+#   CWMP:    http://<host>:7547
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  genieacs-cwmp:
+    build:
+      context: .
+      target: prod
+    image: genieacs-fork:latest
+    restart: unless-stopped
+    ports:
+      - "7547:7547"
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+      - GENIEACS_CWMP_INTERFACE=0.0.0.0
+      - GENIEACS_CWMP_LOG_FILE=/var/log/genieacs/cwmp.log
+      - GENIEACS_CWMP_ACCESS_LOG_FILE=/var/log/genieacs/cwmp-access.log
+    volumes:
+      - genieacs_logs:/var/log/genieacs
+      - genieacs_config:/opt/genieacs/config
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: ["genieacs-cwmp"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  genieacs-nbi:
+    build:
+      context: .
+      target: prod
+    image: genieacs-fork:latest
+    restart: unless-stopped
+    ports:
+      - "7557:7557"
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+      - GENIEACS_NBI_INTERFACE=0.0.0.0
+      - GENIEACS_NBI_LOG_FILE=/var/log/genieacs/nbi.log
+      - GENIEACS_NBI_ACCESS_LOG_FILE=/var/log/genieacs/nbi-access.log
+    volumes:
+      - genieacs_logs:/var/log/genieacs
+      - genieacs_config:/opt/genieacs/config
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: ["genieacs-nbi"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  genieacs-fs:
+    build:
+      context: .
+      target: prod
+    image: genieacs-fork:latest
+    restart: unless-stopped
+    ports:
+      - "7567:7567"
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+      - GENIEACS_FS_INTERFACE=0.0.0.0
+      - GENIEACS_FS_LOG_FILE=/var/log/genieacs/fs.log
+    volumes:
+      - genieacs_logs:/var/log/genieacs
+      - genieacs_config:/opt/genieacs/config
+      - genieacs_files:/opt/genieacs/files
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: ["genieacs-fs"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  genieacs-ui:
+    build:
+      context: .
+      target: prod
+    image: genieacs-fork:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+      - GENIEACS_UI_INTERFACE=0.0.0.0
+      - GENIEACS_UI_LOG_FILE=/var/log/genieacs/ui.log
+    volumes:
+      - genieacs_logs:/var/log/genieacs
+      - genieacs_config:/opt/genieacs/config
+    depends_on:
+      - genieacs-nbi
+    command: ["genieacs-ui"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  mongodb_data:
+  genieacs_logs:
+  genieacs_config:
+  genieacs_files:

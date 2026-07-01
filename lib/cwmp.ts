@@ -47,6 +47,7 @@ import { parseXmlDeclaration } from "./xml-parser.ts";
 import * as debug from "./debug.ts";
 import { getRequestOrigin } from "./forwarded.ts";
 import { getSocketEndpoints } from "./server.ts";
+import { provisionPppoe } from "./provisioning/pppoe.ts";
 
 const gzipPromisified = promisify(zlib.gzip);
 const deflatePromisified = promisify(zlib.deflate);
@@ -402,6 +403,24 @@ function appendProvisions(original: any[], toAppend: any[]): boolean {
 
 async function applyPresets(sessionContext: SessionContext): Promise<void> {
   const deviceData = sessionContext.deviceData;
+
+  /* ---- PPPoE bootstrap / data collection hook ---- */
+  try {
+    const pppoeDecls = await provisionPppoe(sessionContext);
+    if (pppoeDecls.length) {
+      const { fault, rpcId, rpc } = await session.rpcRequest(sessionContext, pppoeDecls);
+      if (fault) {
+        recordFault(sessionContext, fault);
+        session.clearProvisions(sessionContext);
+        return applyPresets(sessionContext);
+      }
+      if (rpc) return sendAcsRequest(sessionContext, rpcId, rpc);
+    }
+  } catch (err) {
+    logger.error({ message: `[PPPoE] Error: ${(err as Error).message}`, stack: (err as Error).stack });
+  }
+  /* ---- end PPPoE hook ---- */
+
   const presets = localCache.getPresets(sessionContext.cacheSnapshot);
 
   // Filter presets based on existing faults
