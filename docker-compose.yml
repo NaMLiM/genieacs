@@ -48,5 +48,26 @@ services:
       mongodb:
         condition: service_healthy
 
+  genieacs-sim:
+    image: node:22-alpine
+    restart: unless-stopped
+    profiles:
+      - sim
+    volumes:
+      # Mount a config/script dir for custom device profiles
+      - ./sim:/opt/genieacs-sim:ro
+    depends_on:
+      genieacs:
+        condition: service_started
+    command:
+      - sh
+      - -c
+      - |
+        npm install -g genieacs-sim && \
+        echo "Starting GenieACS Simulator..." && \
+        echo "Example: genieacs-sim --acs http://genieacs:7547/ --serial YOUR_SN" && \
+        echo "Connecting to genieacs:7547" && \
+        genieacs-sim --acs http://genieacs:7547/ --serial SIM-$$(date +%s)
+
 volumes:
   mongodb_data:
