@@ -38,4 +38,4 @@ ENV PATH=/opt/genieacs/bin:$PATH
 EXPOSE 7547 7557 7567 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "genieacs.js"]
+CMD ["sh", "-c", "genieacs-cwmp & genieacs-nbi & genieacs-fs & genieacs-ui & wait"]
