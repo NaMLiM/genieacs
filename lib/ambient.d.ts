@@ -13,3 +13,13 @@ declare module "*.js" {
   const content: string;
   export default content;
 }
+
+declare module "acorn-globals" {
+  import { Node } from "acorn";
+  interface GlobalReference {
+    name: string;
+    nodes: Node[];
+  }
+  function detectGlobals(source: string | Node): GlobalReference[];
+  export default detectGlobals;
+}

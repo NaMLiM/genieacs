@@ -6,12 +6,12 @@
 // Attributes:
 //   device - Device object from the parent router
 
-const device = node.attributes.device.get();
-const deviceId = device["DeviceID.ID"];
+const device = node.attributes.device;
+const deviceId = new Signal.Computed(() => device.get()?.["DeviceID.ID"]);
 const taskCmd = new Signal.State(null);
-const deviceFaults = new Signal.State(null);
 const delCmd = new Signal.State(null);
 const delStatus = new Signal.State(null);
+const uploadsOpen = new Signal.State(false);
 
 const delMessage = new Signal.Computed(() => {
   const s = delStatus.get();
@@ -29,9 +29,13 @@ const pingDisplay = new Signal.Computed(() => {
   return "Unreachable";
 });
 
-const connectionUrl =
-  device["InternetGatewayDevice.ManagementServer.ConnectionRequestURL"];
-const hostIp = connectionUrl ? new URL(connectionUrl).hostname : null;
+const hostIp = new Signal.Computed(() => {
+  const connectionUrl =
+    device.get()?.[
+      "InternetGatewayDevice.ManagementServer.ConnectionRequestURL"
+    ];
+  return connectionUrl ? new URL(connectionUrl).hostname : null;
+});
 
 // Device parameters to display
 const parameters = [
@@ -81,93 +85,38 @@ const summonParams = [
   ...hostsColumns.map((c) => `${hostsRoot}.*.${c.param}`),
 ];
 
-const parameterRows = parameters
-  .filter(({ param }) => device[param])
-  .map(({ label, param }) => (
-    <tr class="border-b border-stone-200">
-      <th class="text-sm font-medium text-stone-500 text-left px-6 py-3">
-        {label}
-      </th>
-      <td class="text-sm text-stone-900 px-6 py-3">
-        <parameter device={device} param={param} />
-      </td>
-    </tr>
-  ));
+const parameterRows = new Signal.Computed(() => {
+  const dev = device.get() ?? {};
+  return parameters
+    .filter(({ param }) => dev[param])
+    .map(({ label, param }) => (
+      <tr class="border-b border-stone-200">
+        <th class="text-sm font-medium text-stone-500 text-left px-6 py-3">
+          {label}
+        </th>
+        <td class="text-sm text-stone-900 px-6 py-3">
+          <parameter device={device} param={param} />
+        </td>
+      </tr>
+    ));
+});
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
-const informTime = device["Events.Inform"];
-const now = Date.now();
-const [onlineStatus, statusColor] =
-  informTime > now - FIVE_MINUTES
-    ? ["Online", "#31a354"]
-    : informTime > now - FIVE_MINUTES - ONE_DAY
-      ? ["Past 24 Hours", "#a1d99b"]
-      : ["Others", "#e5f5e0"];
-
-const faultsTable = new Signal.Computed(() => {
-  const faults = deviceFaults.get();
-  if (!faults?.length)
-    return (
-      <tr>
-        <td
-          class="bg-stripes text-sm font-medium text-center text-stone-500 p-4"
-          colspan="7"
-        >
-          No faults
-        </td>
-      </tr>
-    );
-  return faults.map((f) => {
-    const yamlOut = new Signal.State("");
-    return (
-      <tr key={f._id}>
-        <td class="whitespace-nowrap pl-6 pr-3 py-4 text-sm text-stone-900">
-          {f.channel}
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          {f.code}
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          <span
-            class="inline-block truncate decoration-dotted max-w-xs"
-            onmouseover={(e) => {
-              e.target.title = f.message;
-            }}
-          >
-            {f.message}
-          </span>
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          <do-yaml-stringify arg={f.detail} res={yamlOut} />
-          <span
-            class="inline-block truncate decoration-dotted max-w-xs cursor-pointer hover:underline"
-            onmouseover={(e) => {
-              e.target.title = e.target.textContent;
-            }}
-          >
-            {yamlOut}
-          </span>
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          {f.retries}
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          {new Date(f.timestamp).toLocaleString()}
-        </td>
-        <td class="whitespace-nowrap px-3 py-4 text-sm text-stone-900">
-          <button
-            class="text-cyan-700 hover:text-cyan-900 font-medium"
-            onclick={() => delCmd.set({ resource: "faults", id: f._id })}
-          >
-            Delete
-          </button>
-        </td>
-      </tr>
-    );
-  });
+const onlineStatus = new Signal.Computed(() => {
+  const informTime = device.get()?.["Events.Inform"];
+  const now = Date.now();
+  if (informTime > now - FIVE_MINUTES) return "Online";
+  if (informTime > now - FIVE_MINUTES - ONE_DAY) return "Past 24 Hours";
+  return "Others";
 });
+
+const statusColor = new Signal.Computed(
+  () =>
+    ({ Online: "#31a354", "Past 24 Hours": "#a1d99b" })[onlineStatus.get()] ??
+    "#e5f5e0",
+);
 
 // @ts-expect-error: top-level return (script is wrapped in a function at runtime)
 return (
@@ -221,44 +170,8 @@ return (
           <param label={c.label} param={c.param} />
         ))}
       </instance-table>
-      <do-fetch
-        arg={{
-          resource: "faults",
-          filter: `_id > '${deviceId}:' AND _id < '${deviceId}:\xff'`,
-        }}
-        res={deviceFaults}
-      />
       <h2>Faults</h2>
-      <div class="shadow overflow-hidden rounded-lg w-max">
-        <table class="divide-y divide-stone-200">
-          <thead class="bg-stone-50">
-            <tr>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 pl-6 pr-3">
-                Channel
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3">
-                Code
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3">
-                Message
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3">
-                Detail
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3">
-                Retries
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3">
-                Timestamp
-              </th>
-              <th class="py-3.5 text-left text-sm font-semibold text-stone-500 px-3"></th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-stone-200 bg-white">
-            {faultsTable}
-          </tbody>
-        </table>
-      </div>
+      <faults-table device={device} />
       <h2>Data model</h2>
       <datamodel-explorer device={device} />
       <div class="space-x-3 mt-4">
@@ -266,29 +179,40 @@ return (
           {
             label: "Reboot",
             title: "Reboot device",
-            task: { name: "reboot", device: deviceId },
+            action: () =>
+              taskCmd.set({ name: "reboot", device: deviceId.get() }),
           },
           {
             label: "Reset",
             title: "Factory reset device",
-            task: { name: "factoryReset", device: deviceId },
+            action: () =>
+              taskCmd.set({ name: "factoryReset", device: deviceId.get() }),
           },
           {
             label: "Push file",
             title: "Push a firmware or config file",
-            task: { name: "download", devices: [deviceId] },
+            action: () =>
+              taskCmd.set({ name: "download", devices: [deviceId.get()] }),
           },
           {
             label: "Delete",
             title: "Delete device",
             action: () => {
-              if (confirm(`Delete device ${deviceId}?`))
-                delCmd.set({ resource: "devices", id: deviceId });
+              const id = deviceId.get();
+              if (confirm(`Delete device ${id}?`)) {
+                delStatus.set(null);
+                delCmd.set({ resource: "devices", id });
+              }
             },
           },
-        ].map(({ label, title, task: t, action }) => (
+          {
+            label: "Upload",
+            title: "Upload a file from the device",
+            action: () => uploadsOpen.set(true),
+          },
+        ].map(({ label, title, action }) => (
           <button
-            onclick={() => (action ? action() : taskCmd.set(t))}
+            onclick={action}
             title={title}
             class="px-4 py-2 border border-stone-300 shadow-sm text-sm font-medium rounded-md text-stone-700 bg-white hover:bg-stone-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -297,5 +221,11 @@ return (
         ))}
       </div>
     </div>
+    <overlay-dialog open={uploadsOpen}>
+      <h2 class="text-lg font-medium leading-6 text-stone-900 mb-4 pr-6">
+        Uploads from {deviceId}
+      </h2>
+      <uploads-panel device={device} />
+    </overlay-dialog>
   </>
 );

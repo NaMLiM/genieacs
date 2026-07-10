@@ -743,6 +743,11 @@ async function nextRpc(sessionContext: SessionContext): Promise<void> {
         ],
       ]);
       break;
+    case "upload":
+      session.addProvisions(sessionContext, taskChannel, [
+        ["upload", task.fileType ?? "", task.fileName ?? ""],
+      ]);
+      break;
     case "addObject":
       alias = (task.parameterValues || [])
         .map((p) => `${p[0]}:${JSON.stringify(p[1])}`)
@@ -867,11 +872,29 @@ async function sendAcsRequest(
       }
 
       const fileName = acsRequest.fileName ?? "";
-      acsRequest.url = prefix + encodeURI(fileName);
+      acsRequest.url =
+        prefix + fileName.split("/").map(encodeURIComponent).join("/");
 
       const files = localCache.getFiles(sessionContext.cacheSnapshot);
       if (files[fileName]) acsRequest.fileSize = files[fileName].length;
     }
+  }
+
+  if (acsRequest.name === "Upload") {
+    let prefix = "" + config.get("FS_URL_PREFIX");
+
+    if (!prefix) {
+      const FS_PORT = Number(config.get("FS_PORT"));
+      const ssl = !!config.get("FS_SSL_CERT");
+      const origin = getRequestOrigin(sessionContext.httpRequest);
+      let hostname = origin.localAddress;
+      if (origin.host) [hostname] = origin.host.split(":", 1);
+      prefix = (ssl ? "https" : "http") + `://${hostname}:${FS_PORT}/`;
+    }
+
+    acsRequest.url =
+      prefix +
+      (acsRequest.fileName ?? "").split("/").map(encodeURIComponent).join("/");
   }
 
   const rpc = {

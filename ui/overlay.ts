@@ -68,7 +68,7 @@ export function render(): Node | null {
       div(
         {
           class:
-            "relative z-10 bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform max-w-full",
+            "relative z-10 bg-stone-100 rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform max-w-full",
         },
         div(
           { class: "block absolute top-0 right-0 pt-4 pr-4" },
@@ -76,7 +76,7 @@ export function render(): Node | null {
             {
               type: "button",
               class:
-                "bg-white rounded-md text-stone-400 hover:text-stone-500 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500",
+                "rounded-md text-stone-400 hover:text-stone-500 focus:outline-2 focus:outline-offset-2 focus:outline-cyan-500",
               onclick: handleClose,
             },
             span({ class: "sr-only" }, "Close"),

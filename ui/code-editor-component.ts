@@ -16,6 +16,7 @@ function mount(container: HTMLElement, attrs: Attrs): void {
     codeMirror.EditorView.theme({
       "&.cm-editor": {
         display: "block",
+        "background-color": "var(--color-white)",
         width: "50rem",
         height: "30rem",
         "max-width": "100%",

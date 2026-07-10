@@ -28,6 +28,7 @@ import { div } from "./dom.ts";
 
 export { ViewNode } from "./views.ts";
 export { Signal } from "./signals.ts";
+export { viewGlobals } from "./view-globals.ts";
 
 declare global {
   interface Window {
@@ -117,7 +118,7 @@ async function handleRoute(
   // outgoing page has been swapped out (pageSignal/rootSignal set below) and
   // its query signals disposed. A macrotask runs only once the microtask queue
   // has fully drained, so it lands after the entire disposal chain (the content
-  // slot's watchEffect render in dom.ts, then the signal's TrackedSinkSet
+  // slot's watchValue render in dom.ts, then the signal's TrackedSinkSet
   // disposal in reactive-store.ts) regardless of how many microtask hops that
   // takes — unlike a fixed number of queueMicrotask()s, which would be coupled
   // to the exact hop count. Running it sooner would refetch the very queries we

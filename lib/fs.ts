@@ -1,11 +1,16 @@
 import * as url from "node:url";
 import { IncomingMessage, ServerResponse } from "node:http";
-import { PassThrough, pipeline, Readable } from "node:stream";
+import { PassThrough, pipeline, Readable, Transform } from "node:stream";
 import { createHash } from "node:crypto";
-import { filesBucket, collections } from "./db/db.ts";
+import { filesBucket, collections, uploadsBucket } from "./db/db.ts";
 import * as logger from "./logger.ts";
 import { getRequestOrigin } from "./forwarded.ts";
 import memoize from "./common/memoize.ts";
+import { getOperations } from "./cwmp/db.ts";
+
+const MAX_UPLOAD_SIZE = 256 * 1024 * 1024;
+
+class PayloadTooLargeError extends Error {}
 
 const getFile = memoize(
   async (
@@ -79,18 +84,133 @@ function matchEtag(etag: string, header: string): boolean {
   return false;
 }
 
+async function canUpload(
+  deviceId: string,
+  fileName: string,
+  timeout = Date.now() + 5000,
+): Promise<boolean> {
+  const operations = Object.values(await getOperations(deviceId));
+  for (const operation of operations) {
+    if (operation.name === "Upload" && operation.args.fileName === fileName)
+      return true;
+  }
+
+  if (Date.now() >= timeout) return false;
+  // Need to wait and retry in case upload was initiated before session was closed
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return canUpload(deviceId, fileName, timeout);
+}
+
 export async function listener(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    response.writeHead(405, { Allow: "GET, HEAD" });
+  if (
+    request.method !== "GET" &&
+    request.method !== "HEAD" &&
+    request.method !== "PUT"
+  ) {
+    response.writeHead(405, { Allow: "GET, HEAD, PUT" });
     response.end("405 Method Not Allowed");
     return;
   }
 
   const urlParts = url.parse(request.url!, true);
   const filename = decodeURIComponent(urlParts.pathname!.substring(1));
+
+  if (request.method === "PUT") {
+    if (!urlParts.pathname) {
+      response.writeHead(400);
+      response.end("400 Bad Request");
+      return;
+    }
+
+    const [, deviceId, ...filePath] = urlParts.pathname
+      .split("/")
+      .map(decodeURIComponent);
+
+    if (!deviceId || filePath.length === 0) {
+      response.writeHead(400);
+      response.end("400 Bad Request");
+      return;
+    }
+
+    const fileName = `${deviceId}/${filePath.join("/")}`;
+
+    const log = {
+      message: "File upload",
+      filename: fileName,
+      remoteAddress: getRequestOrigin(request).remoteAddress,
+      method: request.method,
+    };
+
+    if (!(await canUpload(deviceId, fileName))) {
+      log.message += " not allowed";
+      logger.accessError(log);
+      response.writeHead(403);
+      response.end("403 Forbidden");
+      return;
+    }
+
+    const contentLength = Number(request.headers["content-length"] || 0);
+    if (contentLength > MAX_UPLOAD_SIZE) {
+      log.message += " too large";
+      logger.accessError(log);
+      response.writeHead(413, { Connection: "close" });
+      response.end("413 Payload Too Large");
+      return;
+    }
+
+    try {
+      await uploadsBucket.delete(fileName as any);
+    } catch {
+      // Ignore not-found (the common case: no previous upload to replace).
+      // A genuine DB error resurfaces below when the upload stream attempts
+      // to persist the file.
+    }
+    const uploadStream = uploadsBucket.openUploadStreamWithId(
+      fileName as any,
+      fileName,
+    );
+
+    // Content-Length can lie (or be absent with chunked encoding), so also
+    // enforce the limit on the actual bytes streamed
+    let size = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, encoding, callback) {
+        size += chunk.length;
+        if (size > MAX_UPLOAD_SIZE) callback(new PayloadTooLargeError());
+        else callback(null, chunk);
+      },
+    });
+
+    pipeline(request, limiter, uploadStream, (err) => {
+      if (err) {
+        // Delete the partially written chunks (the files doc is only
+        // written at finish, so an unaborted failure orphans them)
+        void uploadStream.abort().catch(() => {});
+        const tooLarge = err instanceof PayloadTooLargeError;
+        log.message += tooLarge ? " too large" : " failed";
+        logger.accessError(log);
+        if (!response.headersSent) {
+          if (tooLarge) {
+            response.writeHead(413, { Connection: "close" });
+            response.end("413 Payload Too Large");
+          } else {
+            response.writeHead(500);
+            response.end(err.message);
+          }
+        } else {
+          response.destroy();
+        }
+        return;
+      }
+      logger.accessInfo(log);
+      response.writeHead(200);
+      response.end();
+    });
+    return;
+  }
 
   const log = {
     message: "Fetch file",

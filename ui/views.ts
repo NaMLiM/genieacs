@@ -4,18 +4,19 @@ import {
   SignalBase,
   StateSignal,
   abortSignal,
-  setTimeout as _setTimeout,
+  runWithCleanupOwner,
   setInterval as _setInterval,
 } from "./signals.ts";
 import views from "views-bundle";
 import { count, pagedFetch, invalidate, sameRefs } from "./reactive-store.ts";
-import { SkewedDate, getClockSkew } from "./skewed-date.ts";
+import { getClockSkew } from "./skewed-date.ts";
 import Expression from "../lib/common/expression.ts";
 import * as taskQueue from "./task-queue.ts";
 import * as notifications from "./notifications.ts";
 import { deleteResource, ping, updateTags } from "./api-client.ts";
 import { stringify } from "../lib/common/yaml.ts";
 import { createElement, disposalAnchor, fragment, type Child } from "./dom.ts";
+import { wrapViewHandler, wrapViewMount } from "./view-membrane.ts";
 
 type ViewElement =
   | ViewNode
@@ -31,7 +32,7 @@ export class ViewNode {
   children: ViewElement[];
   constructor(
     name: string,
-    attributes: Record<string, any>,
+    attributes: Record<string, any> | null,
     children: ViewElement[],
   ) {
     this.name = name;
@@ -182,8 +183,13 @@ function doTask(node: SignalizedViewNode): ViewElement {
           if (signal.aborted) return;
           if (res) res.set("stale");
         });
-    } else if (task.name === "setParameterValues" || task.name === "download") {
+    } else if (
+      task.name === "setParameterValues" ||
+      task.name === "download" ||
+      task.name === "upload"
+    ) {
       if (task.name === "download") taskQueue.stageDownload(task);
+      else if (task.name === "upload") taskQueue.stageUpload(task);
       else taskQueue.stageSpv(task);
       if (res) res.set("staging");
     } else {
@@ -310,13 +316,7 @@ function initView(context: RenderContext, node: ViewElement): ViewElement {
     const context2 = context.popView(node.name);
     const signalizedNode = signalizeNode(node);
     return new ComputedSignal<ViewElement>(() => {
-      const res = script(
-        signalizedNode,
-        _setTimeout as any,
-        _setInterval as any,
-        SkewedDate as unknown as DateConstructorLike,
-      );
-
+      const res = script(signalizedNode);
       return initView(context2, res);
     });
   }
@@ -335,16 +335,7 @@ function initView(context: RenderContext, node: ViewElement): ViewElement {
   return new ViewNode(node.name, node.attributes, children);
 }
 
-type SetTimeout = typeof setTimeout;
-
-type DateConstructorLike = typeof globalThis.Date;
-
-type ViewFunc = (
-  node: SignalizedViewNode,
-  setTimeout: SetTimeout,
-  setInterval: SetTimeout,
-  Date: DateConstructorLike,
-) => ViewElement;
+type ViewFunc = (node: SignalizedViewNode) => ViewElement;
 
 // Immutable: every derived context is constructed with its own (shallow-
 // copied) stacks map. The stack arrays are shared between contexts until
@@ -409,6 +400,21 @@ function toChild(node: ViewElement, nsContext?: string): Child {
     const attrs: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(node.attributes)) {
       if (key === "xmlns") continue;
+      // onRemove isn't a view attribute (dom.ts discards it; use the each()
+      // option instead). Strip it so the on* branch below doesn't wrap it.
+      if (key === "onRemove") continue;
+      if (key === "onMount" && typeof value === "function") {
+        attrs[key] = wrapViewMount(value as (el: any) => unknown);
+        continue;
+      }
+      if (key.startsWith("on")) {
+        // Only function values are wrapped through the membrane; a string-valued
+        // on* (e.g. onclick="alert(1)") would be installed as an inline handler
+        // running in global scope, escaping the membrane — so drop it.
+        if (typeof value === "function")
+          attrs[key] = wrapViewHandler(value as (e: any) => void);
+        continue;
+      }
       if (value instanceof SignalBase) {
         attrs[key] = () => value.get();
       } else {
@@ -460,5 +466,17 @@ export function renderView(
     initView(context, new ViewNode(name, attrs, [])),
   );
   const viewNode = owner.get();
-  return fragment(toChild(viewNode), disposalAnchor(owner));
+  // owner.get() has unwound `computing`, so re-establish `owner` as the ambient
+  // cleanup owner (not the computing signal — toChild must not register
+  // dependencies) while toChild converts the tree. toChild wraps on*/onMount
+  // handlers here, and wrapViewHandler/wrapViewMount capture the owner at build
+  // time; without this they would capture null and leak past view teardown.
+  return fragment(
+    // Cast away ComputedSignal's invariant T: runWithCleanupOwner only uses the
+    // signal as a cleanup owner (its T is never read).
+    runWithCleanupOwner(owner as ComputedSignal<unknown>, () =>
+      toChild(viewNode),
+    ),
+    disposalAnchor(owner),
+  );
 }

@@ -8,6 +8,10 @@ import {
   Watcher,
   setTimeout,
   setInterval,
+  registerCleanup,
+  runWithCleanupOwner,
+  currentCleanupOwner,
+  abortSignal,
 } from "../ui/signals.ts";
 
 // =============================================================================
@@ -78,6 +82,58 @@ void test("StateSignal.set() with same value (Object.is) doesn't trigger updates
   nanSignal.set(NaN);
   nanComputed.get();
   assert.strictEqual(nanComputeCount, 1);
+});
+
+void test("StateSignal.update applies fn to current value and notifies", () => {
+  const signal = new StateSignal(1);
+  let computeCount = 0;
+  const computed = new ComputedSignal(() => {
+    computeCount++;
+    return signal.get() * 2;
+  });
+  assert.strictEqual(computed.get(), 2);
+
+  signal.update((v) => v + 1);
+  assert.strictEqual(signal.get(), 2);
+  assert.strictEqual(computed.get(), 4);
+  assert.strictEqual(computeCount, 2);
+
+  // Goes through set(): an equal result is a no-op for dependents
+  signal.update((v) => v);
+  assert.strictEqual(computed.get(), 4);
+  assert.strictEqual(computeCount, 2);
+});
+
+void test("StateSignal.update inside a computed registers no dependency", () => {
+  // update() is a command, not a subscription: an effect that appends to a
+  // list must not re-run (and re-append) when the list later changes.
+  const list = new StateSignal<number[]>([]);
+  let runs = 0;
+  const effect = new ComputedSignal(() => {
+    runs++;
+    list.update((prev) => [...prev, runs]);
+    return null;
+  });
+
+  effect.get();
+  assert.strictEqual(runs, 1);
+  assert.deepStrictEqual(list.get(), [1]);
+
+  // An external write to the list must not dirty the effect computed
+  list.set([]);
+  effect.get();
+  assert.strictEqual(runs, 1);
+});
+
+void test("StateSignal.update throws on disposed signal", () => {
+  const signal = new StateSignal(1);
+  signal[Symbol.dispose]();
+  assert.throws(
+    () => {
+      signal.update((v) => v + 1);
+    },
+    { message: "Cannot write to disposed signal" },
+  );
 });
 
 void test("Can subclass StateSignal", () => {
@@ -969,4 +1025,172 @@ void test("ComputedSignal custom equals notifies watchers only on genuine change
   assert.strictEqual(derived.get(), before);
 
   watcher[Symbol.dispose]();
+});
+
+// =============================================================================
+// Ambient cleanup owner (runWithCleanupOwner / currentCleanupOwner)
+// =============================================================================
+
+void test("registerCleanup drops when there is no live owner (absent or disposed)", () => {
+  let cleaned = false;
+  const drop = (): void => {
+    cleaned = true;
+  };
+
+  // No owner in force.
+  assert.strictEqual(registerCleanup(drop), false);
+  assert.strictEqual(currentCleanupOwner(), null);
+
+  // Owner present but already disposed.
+  const disposed = new ComputedSignal<unknown>(() => null);
+  disposed[Symbol.dispose]();
+  assert.strictEqual(
+    runWithCleanupOwner(disposed, () => registerCleanup(drop)),
+    false,
+  );
+  assert.strictEqual(cleaned, false);
+});
+
+void test("registerCleanup anchors to the ambient owner and runs on disposal", () => {
+  const owner = new ComputedSignal<unknown>(() => null);
+  let cleaned = false;
+
+  const anchored = runWithCleanupOwner(owner, () =>
+    registerCleanup(() => {
+      cleaned = true;
+    }),
+  );
+  assert.strictEqual(anchored, true);
+  assert.strictEqual(currentCleanupOwner(), null); // restored after the block
+
+  assert.strictEqual(cleaned, false);
+  owner[Symbol.dispose]();
+  assert.strictEqual(cleaned, true);
+});
+
+void test("runWithCleanupOwner anchors cleanups without tracking dependencies", () => {
+  const owner = new ComputedSignal<unknown>(() => null);
+  owner.get(); // make it Clean/valid
+  const state = new StateSignal(1);
+
+  runWithCleanupOwner(owner, () => {
+    // Reading a signal here must NOT make `owner` depend on it.
+    state.get();
+    registerCleanup(() => {});
+  });
+
+  // If a dependency had been registered, owner would be among state's sinks.
+  assert.strictEqual((state as any)._sinks.size, 0);
+});
+
+void test("a signal's constructor self-anchor is dropped under a disposed owner", () => {
+  // Computed/State/Const constructors anchor their own disposal via
+  // registerCleanup. Under a LIVE owner that anchors (control: the child is
+  // disposed when the owner is); under an already-disposed owner the _disposed
+  // gate makes that registerCleanup return false, so the anchor is dropped and
+  // the new signal stays independent rather than being re-anchored to a dead owner.
+  const liveOwner = new ComputedSignal<unknown>(() => null);
+  const anchored = runWithCleanupOwner(
+    liveOwner,
+    () => new ComputedSignal(() => 1),
+  );
+  liveOwner[Symbol.dispose]();
+  assert.throws(() => anchored.get(), /disposed/); // anchored → disposed with owner
+
+  const deadOwner = new ComputedSignal<unknown>(() => null);
+  deadOwner[Symbol.dispose]();
+  const dropped = runWithCleanupOwner(
+    deadOwner,
+    () => new ComputedSignal(() => 2),
+  );
+  assert.strictEqual(dropped.get(), 2); // anchor dropped → still alive
+});
+
+void test("setTimeout re-establishes the owner so callback cleanups anchor", async () => {
+  const state = new StateSignal(1);
+  let cleaned = false;
+
+  const computed = new ComputedSignal(() => {
+    state.get();
+    setTimeout(() => {
+      // Runs on a later turn with `computing` null; the wrapper re-establishes
+      // the owner, so this addEventListener-style cleanup anchors to `computed`.
+      registerCleanup(() => {
+        cleaned = true;
+      });
+    }, 10);
+    return "done";
+  });
+
+  computed.get();
+  await new Promise((r) => globalThis.setTimeout(r, 50));
+  assert.strictEqual(cleaned, false); // still alive — not yet disposed
+
+  computed[Symbol.dispose]();
+  assert.strictEqual(cleaned, true); // cleanup registered in the callback ran
+});
+
+void test("a timer callback does not track dependencies of the owner", async () => {
+  const trigger = new StateSignal(0);
+  const readInCallback = new StateSignal(0);
+  let runs = 0;
+
+  const computed = new ComputedSignal(() => {
+    trigger.get();
+    setTimeout(() => {
+      readInCallback.get(); // must not register a dependency
+    }, 10);
+    runs++;
+    return null;
+  });
+
+  computed.get();
+  await new Promise((r) => globalThis.setTimeout(r, 50));
+  assert.strictEqual(runs, 1);
+
+  // Changing what the callback read must not invalidate the computed.
+  readInCallback.set(1);
+  computed.get();
+  assert.strictEqual(runs, 1);
+});
+
+void test("a nested timer inherits the ambient owner and auto-clears", async () => {
+  const state = new StateSignal(1);
+  let inner = 0;
+
+  const computed = new ComputedSignal(() => {
+    state.get();
+    setTimeout(() => {
+      // Scheduled with `computing` null; the outer wrapper re-established the
+      // owner, so this inner interval anchors to `computed` and is cleared on
+      // disposal instead of leaking.
+      setInterval(() => {
+        inner++;
+      }, 10);
+    }, 10);
+    return null;
+  });
+
+  computed.get();
+  await new Promise((r) => globalThis.setTimeout(r, 60));
+  const seen = inner;
+  assert.ok(seen >= 1, "nested interval fired");
+
+  computed[Symbol.dispose]();
+  await new Promise((r) => globalThis.setTimeout(r, 40));
+  assert.strictEqual(inner, seen); // interval cleared on owner disposal
+});
+
+void test("abortSignal with no owner never aborts", () => {
+  const sig = abortSignal();
+  assert.strictEqual(sig.aborted, false);
+  assert.strictEqual(currentCleanupOwner(), null);
+});
+
+void test("abortSignal resolves the ambient owner and aborts on disposal", () => {
+  const owner = new ComputedSignal<unknown>(() => null);
+  const sig = runWithCleanupOwner(owner, () => abortSignal());
+  assert.strictEqual(sig.aborted, false); // live owner
+  owner[Symbol.dispose]();
+  assert.strictEqual(sig.aborted, true); // aborted on owner disposal
 });

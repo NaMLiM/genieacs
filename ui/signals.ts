@@ -51,6 +51,38 @@ export interface SignalOptions<T> {
 // Tracks the currently computing signal for automatic dependency registration
 let computing: ComputedSignal<unknown> | null = null;
 
+// The ambient cleanup owner used when `computing` is null. Re-established by
+// runWithCleanupOwner across timer callbacks and view event-handler/onMount
+// dispatch, so resources a view script creates outside a live computation still
+// anchor to the owning computed. DISTINCT from `computing`: it governs cleanup
+// ownership only, never dependency tracking — a signal read inside such a
+// callback must NOT make the owner depend on it.
+let cleanupOwner: ComputedSignal<unknown> | null = null;
+
+// The computed that should own cleanups registered right now: the computing
+// signal if a computation is in force, else the ambient cleanup owner.
+export function currentCleanupOwner(): ComputedSignal<unknown> | null {
+  return computing ?? cleanupOwner;
+}
+
+// Re-establish `signal` as the ambient cleanup owner for `fn`, WITHOUT making it
+// the computing signal — cleanups registered inside `fn` anchor to `signal`, but
+// signal reads do not register dependencies on it. Carries a view's cleanup
+// scope across boundaries where `computing` has unwound (timer callbacks, event
+// handlers, onMount).
+export function runWithCleanupOwner<T>(
+  signal: ComputedSignal<unknown>,
+  fn: () => T,
+): T {
+  const prev = cleanupOwner;
+  cleanupOwner = signal;
+  try {
+    return fn();
+  } finally {
+    cleanupOwner = prev;
+  }
+}
+
 // Run callback outside reactive tracking scope. Child computeds won't register
 // as dependencies of the currently-evaluating parent. Equivalent to TC39 Signal.subtle.untrack().
 export function untracked<T>(fn: () => T): T {
@@ -70,20 +102,30 @@ export function registerDependency(source: SignalBase<unknown>): void {
   }
 }
 
-function registerCleanup(cleanup: () => void): void {
-  if (computing !== null) {
-    computing._cleanups.add(cleanup);
+// Defer a teardown onto the current cleanup owner. Returns true if there was a
+// live owner to anchor to; false means the cleanup was dropped (no owner, or the
+// owner is already disposed), letting callers mirror the timer wrappers'
+// unscoped fallback.
+export function registerCleanup(cleanup: () => void): boolean {
+  const owner = currentCleanupOwner();
+  if (owner !== null && !owner._disposed) {
+    owner._cleanups.add(cleanup);
+    return true;
   }
+  return false;
 }
 
 const NEVER_ABORTED = AbortSignal.any([]);
 
-// Returns the AbortSignal of the enclosing ComputedSignal. The signal is
-// aborted when the computed recomputes or is disposed. Outside a computation,
-// returns a signal that never aborts.
+// Returns the AbortSignal of the current cleanup owner — the enclosing
+// ComputedSignal, or the ambient owner re-established across an async/dispatch
+// boundary (so a fetch started from a timer callback still aborts on the owning
+// computed's recompute/disposal). With no owner in force, returns a signal that
+// never aborts.
 export function abortSignal(): AbortSignal {
-  if (computing === null) return NEVER_ABORTED;
-  return computing.abortSignal;
+  const owner = currentCleanupOwner();
+  if (owner === null) return NEVER_ABORTED;
+  return owner.abortSignal;
 }
 
 function runCleanups(signal: ComputedSignal<unknown>): void {
@@ -169,8 +211,9 @@ export class ConstSignal<T> extends SignalBase<T> {
     super();
     this._value = value;
 
-    // Register disposal if created inside a computation
-    if (computing !== null) {
+    // Self-dispose when created under a cleanup owner (a live computation, or
+    // the ambient owner across an async/dispatch boundary).
+    if (currentCleanupOwner() !== null) {
       registerCleanup(() => this[Symbol.dispose]());
     }
   }
@@ -197,8 +240,9 @@ export class StateSignal<T> extends SignalBase<T> {
     this._value = initialValue;
     this._equals = options?.equals ?? Object.is;
 
-    // Register disposal if created inside a computation
-    if (computing !== null) {
+    // Self-dispose when created under a cleanup owner (a live computation, or
+    // the ambient owner across an async/dispatch boundary).
+    if (currentCleanupOwner() !== null) {
       registerCleanup(() => this[Symbol.dispose]());
     }
   }
@@ -214,6 +258,12 @@ export class StateSignal<T> extends SignalBase<T> {
     if (this._equals(this._value, newValue)) return;
     this._value = newValue;
     markSinksDirty(this._sinks);
+  }
+
+  // Atomic read-modify-write with an untracked read (direct field access)
+  update(fn: (prev: T) => T): void {
+    if (this._disposed) throw new Error("Cannot write to disposed signal");
+    this.set(fn(this._value));
   }
 
   [Symbol.dispose](): void {
@@ -247,8 +297,9 @@ export class ComputedSignal<T> extends SignalBase<T> {
     this._equals = options?.equals ?? null;
     this._selfRef = new WeakRef(this as ComputedSignal<unknown>);
 
-    // Register disposal if created inside a computation
-    if (computing !== null) {
+    // Self-dispose when created under a cleanup owner (a live computation, or
+    // the ambient owner across an async/dispatch boundary).
+    if (currentCleanupOwner() !== null) {
       registerCleanup(() => this[Symbol.dispose]());
     }
   }
@@ -478,15 +529,17 @@ export const Signal = {
   },
 };
 
-// setTimeout wrapper that skips the callback if the enclosing computed
-// signal is no longer valid when the timeout fires. Outside a computed
-// signal, behaves exactly like globalThis.setTimeout.
+// setTimeout wrapper that skips the callback if the owning computed is no longer
+// valid when the timeout fires, and re-establishes that computed as the ambient
+// cleanup owner around the callback — so a resource it creates (a global
+// addEventListener, a nested timer, a signal) anchors to the owner instead of
+// leaking. Outside a cleanup owner, behaves like globalThis.setTimeout.
 export function setTimeout<TArgs extends unknown[]>(
   callback: (...callbackArgs: TArgs) => void,
   delay?: number,
   ...args: TArgs
 ): ReturnType<typeof globalThis.setTimeout> {
-  const signal = computing;
+  const signal = currentCleanupOwner();
 
   if (signal === null) {
     return globalThis.setTimeout(callback, delay, ...args);
@@ -494,8 +547,12 @@ export function setTimeout<TArgs extends unknown[]>(
 
   const timeoutId = globalThis.setTimeout(
     (...callbackArgs: TArgs) => {
+      // If the owner was invalidated/disposed before this fired, skip. A one-shot
+      // has nothing recurring to stop (the registered cleanup clears a pending id
+      // on disposal/recompute); this guard only covers the fire-before-cleanup
+      // race. Contrast setInterval, which must actively clear (see below).
       if (signal._isValid()) {
-        callback(...callbackArgs);
+        runWithCleanupOwner(signal, () => callback(...callbackArgs));
       }
     },
     delay,
@@ -505,15 +562,16 @@ export function setTimeout<TArgs extends unknown[]>(
   return timeoutId;
 }
 
-// setInterval wrapper that clears the interval when the enclosing computed
-// signal becomes dirty or is recomputed. Outside a computed signal, behaves
-// exactly like globalThis.setInterval.
+// setInterval wrapper that clears the interval when the owning computed becomes
+// dirty or is recomputed, and re-establishes that computed as the ambient
+// cleanup owner around each tick (see setTimeout above). Outside a cleanup owner,
+// behaves like globalThis.setInterval.
 export function setInterval<TArgs extends unknown[]>(
   callback: (...callbackArgs: TArgs) => void,
   delay?: number,
   ...args: TArgs
 ): ReturnType<typeof globalThis.setInterval> {
-  const signal = computing;
+  const signal = currentCleanupOwner();
 
   if (signal === null) {
     return globalThis.setInterval(callback, delay, ...args);
@@ -522,8 +580,12 @@ export function setInterval<TArgs extends unknown[]>(
   const intervalId = globalThis.setInterval(
     (...callbackArgs: TArgs) => {
       if (signal._isValid()) {
-        callback(...callbackArgs);
+        runWithCleanupOwner(signal, () => callback(...callbackArgs));
       } else {
+        // An interval recurs, so stop it here. The owner may be invalidated yet
+        // not recomputed (recompute is lazy/pull-based), so its registered
+        // clearInterval cleanup hasn't run; without this the interval would keep
+        // ticking as a no-op until something pulls the owner's value.
         globalThis.clearInterval(intervalId);
       }
     },

@@ -7,7 +7,7 @@ import {
   Task,
   Operation,
 } from "../types.ts";
-import { collections } from "../db/db.ts";
+import { collections, uploadsBucket } from "../db/db.ts";
 import { optimizeProjection } from "../db/util.ts";
 import * as MongoTypes from "../db/types.ts";
 
@@ -375,6 +375,16 @@ export async function saveDevice(
 
         break;
       default:
+        if (
+          diff[0].segments[0] === "Uploads" &&
+          diff[0].segments[2] === "LastFileName" &&
+          value1 &&
+          value1 !== value2
+        ) {
+          // Ignore error due to missing files
+          await uploadsBucket.delete(value1 as any).catch(() => {});
+        }
+
         if (!diff[2]) {
           let pathStr = path.toString();
           // Paths with that suffix are encoded and need to be decoded
@@ -645,6 +655,10 @@ export async function getDueTasks(
       }),
       ...(t.name === "provisions" && {
         provisions: t.provisions,
+      }),
+      ...(t.name === "upload" && {
+        fileType: t.fileType,
+        fileName: t.fileName,
       }),
     };
 

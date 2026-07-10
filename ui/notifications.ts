@@ -20,7 +20,7 @@ export function push(
     timestamp: Date.now(),
     actions: actions,
   };
-  notificationsSignal.set([...notificationsSignal.get(), n]);
+  notificationsSignal.update((list) => [...list, n]);
   if (!actions) {
     setTimeout(() => {
       dismiss(n);
@@ -31,7 +31,7 @@ export function push(
 }
 
 export function dismiss(n: Notification): void {
-  notificationsSignal.set(notificationsSignal.get().filter((x) => x !== n));
+  notificationsSignal.update((list) => list.filter((x) => x !== n));
 }
 
 export function getSignal(): StateSignal<Notification[]> {

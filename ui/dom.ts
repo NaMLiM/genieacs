@@ -32,7 +32,6 @@ interface BaseAttrs {
   style?:
     | Reactive<string>
     | Partial<Record<keyof CSSStyleDeclaration, Reactive<string>>>;
-  ref?: (el: Element) => void;
   onMount?: (el: Element) => void | (() => void);
   [key: string]: unknown;
 }
@@ -205,17 +204,39 @@ function toComputed<T>(source: (() => T) | SignalBase<T>): ComputedSignal<T> {
     : new ComputedSignal(() => source.get());
 }
 
-// Re-run `update` (batched onto a microtask) whenever `computed` changes,
-// re-arming the watcher each time until it is disposed. The caller does the
-// initial render and is responsible for disposing the returned watcher.
-function watchEffect(
-  computed: SignalBase<unknown>,
-  update: () => void,
+// Seed for watchValue when the caller has no initial value: the first
+// successful pull always fires onChange.
+const NO_VALUE: unique symbol = Symbol("no-value");
+
+// Run `onChange(value)` (batched onto a microtask) whenever `computed` settles
+// on a new value, re-arming the watcher each time until it is disposed. The
+// caller does the initial render and passes what it rendered as `seed`. The
+// identity guard is essential: invalidation waves notify watchers even when
+// the computed resolves to its unchanged cached value, and re-running a
+// consumer then is wasteful or, for regions holding live DOM, destructive.
+// Identity is a sound change proxy because a real recompute mints fresh
+// output; an identical reference means no recompute happened.
+function watchValue<T>(
+  computed: SignalBase<T>,
+  seed: T | typeof NO_VALUE,
+  onChange: (value: T) => void,
 ): Watcher {
+  let last: T | typeof NO_VALUE = seed;
   const watcher = new Watcher(() => {
     queueMicrotask(() => {
       if (watcher._disposed) return;
-      update();
+      let value: T;
+      try {
+        value = computed.get();
+      } catch {
+        // Signal was disposed mid-update; skip but stay armed.
+        watcher.watch(computed);
+        return;
+      }
+      if (last === NO_VALUE || !Object.is(value, last)) {
+        last = value;
+        onChange(value);
+      }
       watcher.watch(computed);
     });
   });
@@ -248,18 +269,18 @@ function bindAttribute(
   const computed = toComputed(value);
   resources.use(computed);
 
-  const applyValue = (): void => {
-    // get() throws if the signal was disposed mid-update; ignore it.
-    try {
-      applyAttribute(element, name, computed.get());
-    } catch {
-      // disposed
-    }
-  };
-
-  // Apply initial value BEFORE watching to avoid spurious re-apply.
-  applyValue();
-  resources.use(watchEffect(computed, applyValue));
+  // Apply initial value BEFORE watching to avoid spurious re-apply. Seed with
+  // NO_VALUE on a throw so the first successful pull still applies.
+  let seed: unknown = NO_VALUE;
+  try {
+    seed = computed.get();
+    applyAttribute(element, name, seed);
+  } catch {
+    // disposed
+  }
+  resources.use(
+    watchValue(computed, seed, (v) => applyAttribute(element, name, v)),
+  );
 
   return resources;
 }
@@ -418,17 +439,12 @@ function createReactiveNode(
   // dependencies of a parent ComputedSignal.
   const computed = untracked(() => toComputed(source));
 
-  const update = (): void => {
+  // Runs only on a genuinely new value (watchValue's guard): this teardown on
+  // an unchanged value would dispose currentNodes and re-insert those SAME
+  // nodes — visually intact but inert.
+  const remount = (value: unknown): void => {
     const parent = anchor.parentNode;
     if (!parent) return;
-
-    let value: unknown;
-    try {
-      value = computed.get();
-    } catch {
-      // Signal was disposed, stop updating
-      return;
-    }
 
     const rendered = toNodes(renderChild(value as Child));
 
@@ -452,7 +468,7 @@ function createReactiveNode(
   const initialValue = untracked(() => computed.get());
   currentNodes.push(...toNodes(renderChild(initialValue as Child)));
 
-  const watcher = watchEffect(computed, update);
+  const watcher = watchValue(computed, initialValue, remount);
 
   // Create a fragment with initial nodes + anchor
   const frag = document.createDocumentFragment();
@@ -521,11 +537,11 @@ export function createElement<T extends Element>(
     for (const [key, value] of Object.entries(attrs)) {
       if (value === undefined) continue;
 
-      // Skip special handlers. "onRemove" is not part of BaseAttrs (use the
-      // each() option instead), but stays skipped defensively: a stray
-      // function-valued onRemove would otherwise match the "on" prefix below
-      // and register a bogus "remove" event listener.
-      if (key === "ref" || key === "onMount" || key === "onRemove") continue;
+      // Skip special handlers. "onMount" is handled below; "onRemove" is not
+      // part of BaseAttrs (use the each() option instead). Both stay skipped so
+      // a stray function-valued attribute is ignored rather than matching the
+      // "on" prefix below and registering a bogus event listener.
+      if (key === "onMount" || key === "onRemove") continue;
 
       // Event handlers
       if (key.startsWith("on") && typeof value === "function") {
@@ -575,11 +591,6 @@ export function createElement<T extends Element>(
 
   // Store disposables
   (element as ElementWithDisposables).__disposables = disposables;
-
-  // Handle ref
-  if (attrs?.ref && typeof attrs.ref === "function") {
-    (attrs.ref as (e: Element) => void)(element);
-  }
 
   // Handle onMount
   if (attrs?.onMount && typeof attrs.onMount === "function") {
@@ -764,8 +775,9 @@ export function each<T>(
   // Create outside parent's tracking scope (same reason as createReactiveNode)
   const computed = untracked(() => toComputed<T[]>(items));
 
-  const update = (): void => {
-    const newItems = computed.get();
+  // Runs only on a genuinely new array (watchValue's guard); a stale diff
+  // pass would be safe but pure overhead.
+  const update = (newItems: T[]): void => {
     const newKeys = newItems.map((item, i) => key(item, i));
     const parent = anchor.parentNode;
     if (!parent) return;
@@ -856,7 +868,7 @@ export function each<T>(
 
   frag.appendChild(anchor);
 
-  const watcher = watchEffect(computed, update);
+  const watcher = watchValue(computed, initialItems, update);
 
   trackOnNode(anchor, computed, watcher, () => {
     for (const entry of nodeMap.values()) {
