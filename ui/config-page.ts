@@ -7,7 +7,7 @@ import { createUiConfig, type UiConfigResult } from "./ui-config-component.ts";
 import * as overlay from "./overlay.ts";
 import Expression from "../lib/common/expression.ts";
 import { loadCodeMirror, loadYaml } from "./dynamic-loader.ts";
-import { div, h1, button, input, table, tbody, tr, td } from "./dom.ts";
+import { div, h1, h2, button, input, p, label, form, table, tbody, tr, td } from "./dom.ts";
 import { createLongText } from "./long-text-component.ts";
 import { createIcon } from "./icons.ts";
 
@@ -324,6 +324,228 @@ function createSubConfigButton(sub: {
   );
 }
 
+// PppoeForm result interface
+interface PppoeFormResult {
+  element: HTMLDivElement;
+  isModified: () => boolean;
+}
+
+// Helper: strip outer quotes from a quoted config expression string
+function unquoteConfigValue(
+  value: string | undefined | null,
+  defaultVal: string,
+): string {
+  if (!value) return defaultVal;
+  const trimmed = value.trim();
+  if (
+    trimmed.startsWith('"') &&
+    trimmed.endsWith('"') &&
+    trimmed.length >= 2
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+// PPPoE config form — replaces YAML editor with labeled fields
+function createPppoeForm(
+  data: any[],
+  closeOverlay: () => void,
+): PppoeFormResult {
+  // Build initial config lookup
+  const initialConfig: Record<string, string> = {};
+  for (const conf of data) {
+    initialConfig[conf._id as string] = String(conf.value ?? "");
+  }
+
+  let modified = false;
+  let saving = false;
+
+  // --- FTTH API Key ---
+  const apiKeyInput = input({
+    type: "text",
+    class:
+      "shadow-xs focus:ring-cyan-500 focus:border-cyan-500 block sm:text-sm border-stone-300 rounded-md w-full mt-1",
+    value: unquoteConfigValue(initialConfig["pppoe.apiKey"], ""),
+    oninput: () => {
+      modified = true;
+    },
+  });
+
+  // --- VLAN ID ---
+  const vlanIdInput = input({
+    type: "number",
+    class:
+      "shadow-xs focus:ring-cyan-500 focus:border-cyan-500 block sm:text-sm border-stone-300 rounded-md w-full mt-1",
+    value: initialConfig["pppoe.vlanId"] || "246",
+    oninput: () => {
+      modified = true;
+    },
+  });
+
+  // --- Fallback WAN Index ---
+  const fallbackWanIndexInput = input({
+    type: "number",
+    class:
+      "shadow-xs focus:ring-cyan-500 focus:border-cyan-500 block sm:text-sm border-stone-300 rounded-md w-full mt-1",
+    value: initialConfig["pppoe.fallbackWanIndex"] || "3",
+    oninput: () => {
+      modified = true;
+    },
+  });
+
+  const saveBtn = button(
+    {
+      type: "submit",
+      class:
+        "ml-3 inline-flex justify-center py-2 px-4 border border-transparent shadow-xs text-sm font-medium rounded-md text-white bg-cyan-600 hover:bg-cyan-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500",
+    },
+    "Save",
+  );
+
+  const cancelBtn = button(
+    {
+      type: "button",
+      class:
+        "inline-flex justify-center py-2 px-4 border border-stone-300 shadow-xs text-sm font-medium rounded-md text-stone-700 bg-white hover:bg-stone-50 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500",
+      onclick: () => {
+        if (!modified || confirm("You have unsaved changes. Close anyway?")) {
+          closeOverlay();
+        }
+      },
+    },
+    "Cancel",
+  );
+
+  const formEl = form(
+    {
+      onsubmit: (e) => {
+        e.preventDefault();
+        if (saving) return;
+        saving = true;
+
+        const apiKey = (apiKeyInput as HTMLInputElement).value;
+        const vlanId = (vlanIdInput as HTMLInputElement).value;
+        const fallbackWanIndex = (
+          fallbackWanIndexInput as HTMLInputElement
+        ).value;
+
+        // Validate expressions
+        try {
+          Expression.parse(`"${apiKey}"`);
+          Expression.parse(vlanId || "246");
+          Expression.parse(fallbackWanIndex || "3");
+        } catch {
+          notifications.push("error", "Invalid config value");
+          saving = false;
+          return;
+        }
+
+        const saves: Promise<void>[] = [];
+
+        saves.push(
+          putResource("config", "pppoe.apiKey", {
+            value: apiKey ? `"${apiKey}"` : "",
+          }),
+        );
+        saves.push(
+          putResource("config", "pppoe.vlanId", {
+            value: vlanId || "246",
+          }),
+        );
+        saves.push(
+          putResource("config", "pppoe.fallbackWanIndex", {
+            value: fallbackWanIndex || "3",
+          }),
+        );
+
+        Promise.all(saves)
+          .then(() => {
+            notifications.push("success", "PPPoE config updated");
+            invalidate(Date.now());
+            closeOverlay();
+          })
+          .catch((err: Error) => {
+            notifications.push("error", err.message);
+            saving = false;
+          });
+      },
+    },
+    p(
+      { class: "mb-3" },
+      label(
+        { class: "block text-sm font-semibold text-stone-700" },
+        "FTTH API Key",
+      ),
+      apiKeyInput,
+    ),
+    p(
+      { class: "mb-3" },
+      label(
+        { class: "block text-sm font-semibold text-stone-700" },
+        "VLAN ID",
+      ),
+      vlanIdInput,
+    ),
+    p(
+      { class: "mb-3" },
+      label(
+        { class: "block text-sm font-semibold text-stone-700" },
+        "Fallback WAN Index",
+      ),
+      fallbackWanIndexInput,
+    ),
+    div({ class: "flex justify-end mt-5" }, cancelBtn, saveBtn),
+  );
+
+  const element = div(
+    {},
+    h2(
+      { class: "mb-5 text-lg leading-6 font-medium text-stone-900" },
+      "Editing PPPoE config",
+    ),
+    formEl,
+  );
+
+  return {
+    element,
+    isModified: () => modified,
+  };
+}
+
+// Custom button that opens the PPPoE form instead of the generic YAML editor
+function createPppoeConfigButton(sub: {
+  name: string;
+  prefix: string;
+  data: any[];
+}): HTMLButtonElement {
+  return button(
+    {
+      class:
+        "mr-4 px-4 py-2 border border-stone-300 shadow-xs text-sm font-medium rounded-md text-stone-700 bg-white hover:bg-stone-50 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500",
+      onclick: () => {
+        let cb: (() => Node) | null = null;
+        let pppoeFormResult: PppoeFormResult | null = null;
+        cb = () => {
+          if (!pppoeFormResult) {
+            pppoeFormResult = createPppoeForm(sub.data, () => {
+              if (cb) overlay.close(cb);
+            });
+          }
+          return pppoeFormResult.element;
+        };
+        overlay.open(
+          cb,
+          () =>
+            !pppoeFormResult?.isModified() ||
+            confirm("You have unsaved changes. Close anyway?"),
+        );
+      },
+    },
+    `Edit ${sub.name}`,
+  );
+}
+
 export type Attrs = Record<string, never>;
 
 export function createPage(): HTMLElement {
@@ -414,7 +636,11 @@ export function createPage(): HTMLElement {
         }
 
         for (const sub of subsData) {
-          buttons.push(createSubConfigButton(sub));
+          if (sub.name === "pppoe") {
+            buttons.push(createPppoeConfigButton(sub));
+          } else {
+            buttons.push(createSubConfigButton(sub));
+          }
         }
       }
 
