@@ -401,6 +401,7 @@ export function createPage(): HTMLElement {
           { name: "filters", prefix: "ui.filters.", data: [] as any[] },
           { name: "index page", prefix: "ui.index.", data: [] as any[] },
           { name: "device page", prefix: "ui.device.", data: [] as any[] },
+          { name: "pppoe", prefix: "pppoe.", data: [] as any[] },
         ];
 
         for (const conf of confs.value as Array<Record<string, unknown>>) {

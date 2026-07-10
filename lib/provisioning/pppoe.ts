@@ -352,11 +352,12 @@ export async function provisionPppoe(
 
   /* ---------- Phase 2: CPE data available — fetch billing ---------- */
   if (!state.billingFetched) {
-    const apiUrl = getConfigStr(sessionContext, "pppoe.apiUrl", "");
     const apiKey = getConfigStr(sessionContext, "pppoe.apiKey", "");
+    // URL is fixed infrastructure — API key identifies the tenant
+    const apiUrl = "https://murnimakmurabadi.id/api/pppoe";
 
-    if (!apiUrl || !apiKey) {
-      console.warn("[PPPoE] pppoe.apiUrl / pppoe.apiKey not configured — tagging as provisioned");
+    if (!apiKey) {
+      console.warn("[PPPoE] pppoe.apiKey not configured — tagging as provisioned");
       state.bootstrapDone = true;
       return [setProvisionedTagDecl()];
     }
