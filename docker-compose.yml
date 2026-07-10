@@ -1,0 +1,44 @@
+# docker-compose.yml — Clean upstream GenieACS (upstream/master)
+#
+# The upstream genieacs repo does not ship Docker infrastructure.
+# This compose file provides a basic environment for testing the
+# upstream codebase without fork customizations.
+#
+# Access:
+#   UI:      http://localhost:3000
+#   NBI:     http://localhost:7557
+#   FS:      http://localhost:7567
+#   CWMP:    http://localhost:7547
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  genieacs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "7547:7547"   # CWMP (TR-069)
+      - "7557:7557"   # NBI (REST API)
+      - "7567:7567"   # FS (File server)
+      - "3000:3000"   # UI (Web dashboard)
+    environment:
+      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://mongodb:27017/genieacs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongodb_data:
